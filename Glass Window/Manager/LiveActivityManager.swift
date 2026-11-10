@@ -43,6 +43,8 @@ public struct GlassWidgetsAttributes: ActivityAttributes {
 // MARK: - Shared App Group Data Access
 public struct SharedWidgetData {
     public static let appGroupID = "group.com.test.Glass-Window"
+    public static let audioCommandDarwinNotification = "group.com.test.Glass-Window.audioCommand"
+    
     private static var userDefaults: UserDefaults {
         UserDefaults(suiteName: appGroupID) ?? .standard
     }
@@ -63,6 +65,30 @@ public struct SharedWidgetData {
         defaults.set(subtitle, forKey: "playingTrackSubtitle")
         defaults.set(startTime?.timeIntervalSince1970 ?? 0, forKey: "playbackStartTime")
         defaults.synchronize()
+    }
+    
+    public static func postAudioCommand(_ command: String) {
+        let defaults = userDefaults
+        defaults.set(command, forKey: "pendingAudioAction")
+        defaults.set(Date().timeIntervalSince1970, forKey: "pendingActionTimestamp")
+        defaults.synchronize()
+        
+        let notificationName = CFNotificationName(audioCommandDarwinNotification as CFString)
+        CFNotificationCenterPostNotification(
+            CFNotificationCenterGetDarwinNotifyCenter(),
+            notificationName,
+            nil,
+            nil,
+            true
+        )
+    }
+    
+    public static func consumePendingAudioCommand() -> String? {
+        let defaults = userDefaults
+        guard let command = defaults.string(forKey: "pendingAudioAction") else { return nil }
+        defaults.removeObject(forKey: "pendingAudioAction")
+        defaults.synchronize()
+        return command
     }
 }
 
@@ -142,6 +168,37 @@ public final class LiveActivityManager {
             totalDuration: currentState.totalDuration
         )
         
+        Task {
+            if #available(iOS 16.2, *) {
+                await activity.update(.init(state: updatedState, staleDate: nil))
+            } else {
+                await activity.update(using: updatedState)
+            }
+        }
+    }
+    
+    /// Synchronizes playback time offset (e.g. after skipping backward or forward)
+    public func syncPlaybackTime(currentTime: TimeInterval) {
+        let adjustedStartTime = Date().addingTimeInterval(-currentTime)
+        self.playbackStartTime = adjustedStartTime
+        let sharedState = SharedWidgetData.read()
+        SharedWidgetData.write(
+            isPlaying: sharedState.isPlaying,
+            title: sharedState.title,
+            subtitle: sharedState.subtitle,
+            startTime: adjustedStartTime
+        )
+        WidgetCenter.shared.reloadTimelines(ofKind: "GlassWidgets")
+        
+        guard let activity = currentActivity else { return }
+        let currentState = activity.content.state
+        let updatedState = GlassWidgetsAttributes.ContentState(
+            isPlaying: currentState.isPlaying,
+            title: currentState.title,
+            subtitle: currentState.subtitle,
+            startTime: adjustedStartTime,
+            totalDuration: currentState.totalDuration
+        )
         Task {
             if #available(iOS 16.2, *) {
                 await activity.update(.init(state: updatedState, staleDate: nil))

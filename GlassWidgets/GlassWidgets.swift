@@ -7,10 +7,13 @@
 
 import WidgetKit
 import SwiftUI
+import AppIntents
 
 // MARK: - Shared App Group Data Access
 public struct SharedWidgetData {
     public static let appGroupID = "group.com.test.Glass-Window"
+    public static let audioCommandDarwinNotification = "group.com.test.Glass-Window.audioCommand"
+    
     private static var userDefaults: UserDefaults {
         UserDefaults(suiteName: appGroupID) ?? .standard
     }
@@ -31,6 +34,30 @@ public struct SharedWidgetData {
         defaults.set(subtitle, forKey: "playingTrackSubtitle")
         defaults.set(startTime?.timeIntervalSince1970 ?? 0, forKey: "playbackStartTime")
         defaults.synchronize()
+    }
+    
+    public static func postAudioCommand(_ command: String) {
+        let defaults = userDefaults
+        defaults.set(command, forKey: "pendingAudioAction")
+        defaults.set(Date().timeIntervalSince1970, forKey: "pendingActionTimestamp")
+        defaults.synchronize()
+        
+        let notificationName = CFNotificationName(audioCommandDarwinNotification as CFString)
+        CFNotificationCenterPostNotification(
+            CFNotificationCenterGetDarwinNotifyCenter(),
+            notificationName,
+            nil,
+            nil,
+            true
+        )
+    }
+    
+    public static func consumePendingAudioCommand() -> String? {
+        let defaults = userDefaults
+        guard let command = defaults.string(forKey: "pendingAudioAction") else { return nil }
+        defaults.removeObject(forKey: "pendingAudioAction")
+        defaults.synchronize()
+        return command
     }
 }
 
@@ -186,7 +213,7 @@ public struct SmallGlassWidgetView: View {
         }
     }
     
-    // Live "Now Playing" Small View with Ticking Seconds Timer
+    // Live "Now Playing" Small View with Interactive Audio Controls & Ticking Seconds
     private var nowPlayingSmallView: some View {
         VStack(alignment: .leading, spacing: 0) {
             // Header: Live Indicator & Clock
@@ -218,29 +245,56 @@ public struct SmallGlassWidgetView: View {
             
             Spacer(minLength: 4)
             
-            // Audio Artwork Waveform Orb
-            HStack {
-                Spacer()
-                ZStack {
-                    Circle()
-                        .fill(
-                            LinearGradient(
-                                colors: [
-                                    Color(red: 0.15, green: 0.35, blue: 0.40),
-                                    Color(red: 0.08, green: 0.18, blue: 0.22)
-                                ],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                        .frame(width: 44, height: 44)
-                    
-                    Image(systemName: "waveform")
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(Color(red: 0.95, green: 0.82, blue: 0.45))
+            // Audio Controls Bar (15s Rewind, Interactive Play/Pause, 15s Forward)
+            HStack(spacing: 0) {
+                // Rewind 15s Button
+                Button(intent: SkipBackwardAudioIntent()) {
+                    Image(systemName: "gobackward.15")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Color.primary.opacity(0.9))
+                        .frame(width: 32, height: 32)
+                        .background(Color.primary.opacity(renderingMode == .accented ? 0.16 : 0.09), in: Circle())
                 }
+                .buttonStyle(.plain)
+                
                 Spacer()
+                
+                // Center Interactive Play / Pause Button
+                Button(intent: ToggleAudioIntent()) {
+                    ZStack {
+                        Circle()
+                            .fill(
+                                LinearGradient(
+                                    colors: [
+                                        Color(red: 0.15, green: 0.35, blue: 0.40),
+                                        Color(red: 0.08, green: 0.18, blue: 0.22)
+                                    ],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                )
+                            )
+                            .frame(width: 44, height: 44)
+                        
+                        Image(systemName: entry.isAudioPlaying ? "pause.fill" : "play.fill")
+                            .font(.system(size: 18, weight: .bold))
+                            .foregroundStyle(Color(red: 0.95, green: 0.82, blue: 0.45))
+                    }
+                }
+                .buttonStyle(.plain)
+                
+                Spacer()
+                
+                // Fast Forward 15s Button
+                Button(intent: SkipForwardAudioIntent()) {
+                    Image(systemName: "goforward.15")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Color.primary.opacity(0.9))
+                        .frame(width: 32, height: 32)
+                        .background(Color.primary.opacity(renderingMode == .accented ? 0.16 : 0.09), in: Circle())
+                }
+                .buttonStyle(.plain)
             }
+            .padding(.horizontal, 4)
             
             Spacer(minLength: 4)
             
@@ -278,7 +332,7 @@ public struct SmallGlassWidgetView: View {
         }
     }
     
-    // Default Idle Small View
+    // Default Idle Small View with Interactive Quick Play
     private var defaultSmallView: some View {
         VStack(alignment: .leading, spacing: 0) {
             // Top: Streak Badge & Live Clock
@@ -316,18 +370,34 @@ public struct SmallGlassWidgetView: View {
             
             Spacer(minLength: 8)
             
-            // Bottom: Gospel Title Card
-            VStack(alignment: .leading, spacing: 3) {
-                Text("DAILY GOSPEL")
-                    .font(.system(size: 9, weight: .bold, design: .rounded))
-                    .foregroundStyle(Color.secondary)
-                    .tracking(0.5)
+            // Bottom: Gospel Title Card with Interactive Quick-Play Button
+            HStack(alignment: .center, spacing: 8) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("DAILY GOSPEL")
+                        .font(.system(size: 9, weight: .bold, design: .rounded))
+                        .foregroundStyle(Color.secondary)
+                        .tracking(0.5)
+                    
+                    Text(entry.dailyGospelTitle)
+                        .font(.system(size: 12, weight: .semibold, design: .rounded))
+                        .foregroundStyle(Color.primary)
+                        .lineLimit(2)
+                        .widgetAccentable()
+                }
                 
-                Text(entry.dailyGospelTitle)
-                    .font(.system(size: 13, weight: .semibold, design: .rounded))
-                    .foregroundStyle(Color.primary)
-                    .lineLimit(2)
-                    .widgetAccentable()
+                Spacer(minLength: 2)
+                
+                Button(intent: ToggleAudioIntent()) {
+                    ZStack {
+                        Circle()
+                            .fill(Color.primary.opacity(renderingMode == .accented ? 0.20 : 0.12))
+                            .frame(width: 32, height: 32)
+                        Image(systemName: "play.fill")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundStyle(Color.primary)
+                    }
+                }
+                .buttonStyle(.plain)
             }
             .padding(10)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -359,7 +429,7 @@ public struct MediumGlassWidgetView: View {
         }
     }
     
-    // Live "Now Playing" Medium View with Ticking Seconds Timer
+    // Live "Now Playing" Medium View with Interactive Audio Controls & Ticking Seconds
     private var nowPlayingMediumView: some View {
         HStack(spacing: 12) {
             // Left Column: Artwork Orb & Streak
@@ -398,8 +468,8 @@ public struct MediumGlassWidgetView: View {
             }
             .frame(width: 70)
             
-            // Right Column: Track Details & Live Timer
-            VStack(alignment: .leading, spacing: 6) {
+            // Right Column: Track Details & Interactive Audio Controls
+            VStack(alignment: .leading, spacing: 4) {
                 HStack {
                     HStack(spacing: 4) {
                         Circle()
@@ -412,14 +482,23 @@ public struct MediumGlassWidgetView: View {
                     
                     Spacer()
                     
-                    Text(entry.date, style: .time)
-                        .font(.system(size: 10, weight: .bold, design: .monospaced))
-                        .foregroundStyle(Color.secondary)
+                    // Live Ticking Seconds Pill
+                    HStack(spacing: 3) {
+                        Image(systemName: "headphones")
+                            .font(.system(size: 9))
+                            .foregroundStyle(Color(red: 0.95, green: 0.82, blue: 0.45))
+                        Text(entry.playbackStartTime ?? Date(), style: .timer)
+                            .font(.system(size: 11, weight: .bold, design: .monospaced))
+                            .foregroundStyle(Color(red: 0.95, green: 0.82, blue: 0.45))
+                    }
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.primary.opacity(0.08), in: Capsule())
                 }
                 
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: 1) {
                     Text(entry.playingTrackTitle)
-                        .font(.system(size: 15, weight: .bold, design: .rounded))
+                        .font(.system(size: 14, weight: .bold, design: .rounded))
                         .foregroundStyle(Color.primary)
                         .lineLimit(1)
                     
@@ -429,27 +508,62 @@ public struct MediumGlassWidgetView: View {
                         .lineLimit(1)
                 }
                 
-                Spacer(minLength: 4)
+                Spacer(minLength: 2)
                 
-                // Live Ticking Seconds & Session Pill
-                HStack {
-                    Image(systemName: "headphones")
-                        .font(.system(size: 11))
-                        .foregroundStyle(Color(red: 0.95, green: 0.82, blue: 0.45))
+                // Interactive Audio Control Bar
+                HStack(spacing: 10) {
+                    // Rewind 15s Button
+                    Button(intent: SkipBackwardAudioIntent()) {
+                        Image(systemName: "gobackward.15")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Color.primary)
+                            .frame(width: 32, height: 32)
+                            .background(Color.primary.opacity(0.10), in: Circle())
+                    }
+                    .buttonStyle(.plain)
                     
-                    Text("Session Time")
-                        .font(.system(size: 10, weight: .medium, design: .rounded))
-                        .foregroundStyle(Color.secondary)
+                    // Interactive Play / Pause Toggle Button
+                    Button(intent: ToggleAudioIntent()) {
+                        ZStack {
+                            Circle()
+                                .fill(
+                                    LinearGradient(
+                                        colors: [
+                                            Color(red: 0.20, green: 0.45, blue: 0.85),
+                                            Color(red: 0.10, green: 0.25, blue: 0.55)
+                                        ],
+                                        startPoint: .topLeading,
+                                        endPoint: .bottomTrailing
+                                    )
+                                )
+                                .frame(width: 36, height: 36)
+                            
+                            Image(systemName: entry.isAudioPlaying ? "pause.fill" : "play.fill")
+                                .font(.system(size: 14, weight: .bold))
+                                .foregroundStyle(Color.white)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    
+                    // Forward 15s Button
+                    Button(intent: SkipForwardAudioIntent()) {
+                        Image(systemName: "goforward.15")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Color.primary)
+                            .frame(width: 32, height: 32)
+                            .background(Color.primary.opacity(0.10), in: Circle())
+                    }
+                    .buttonStyle(.plain)
                     
                     Spacer()
                     
-                    Text(entry.playbackStartTime ?? Date(), style: .timer)
-                        .font(.system(size: 13, weight: .bold, design: .monospaced))
-                        .foregroundStyle(Color(red: 0.95, green: 0.82, blue: 0.45))
+                    Text(entry.date, style: .time)
+                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                        .foregroundStyle(Color.secondary)
                 }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
+                .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -458,7 +572,7 @@ public struct MediumGlassWidgetView: View {
         }
     }
     
-    // Default Idle Medium View
+    // Default Idle Medium View with Interactive Routine Play
     private var defaultMediumView: some View {
         HStack(spacing: 12) {
             // Left Column: Streak & Next Routine
@@ -484,21 +598,37 @@ public struct MediumGlassWidgetView: View {
                 
                 Spacer(minLength: 8)
                 
-                // Next Routine Section
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("NEXT ROUTINE")
-                        .font(.system(size: 9, weight: .bold, design: .rounded))
-                        .foregroundStyle(Color.secondary)
-                        .tracking(0.5)
+                // Next Routine Section with Interactive Play Button
+                HStack(alignment: .center) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("NEXT ROUTINE")
+                            .font(.system(size: 9, weight: .bold, design: .rounded))
+                            .foregroundStyle(Color.secondary)
+                            .tracking(0.5)
+                        
+                        Text(entry.nextRoutineName)
+                            .font(.system(size: 11, weight: .semibold, design: .rounded))
+                            .foregroundStyle(Color.primary)
+                            .lineLimit(1)
+                        
+                        Text(entry.nextRoutineTime)
+                            .font(.system(size: 9, weight: .medium))
+                            .foregroundStyle(Color.secondary)
+                    }
                     
-                    Text(entry.nextRoutineName)
-                        .font(.system(size: 12, weight: .semibold, design: .rounded))
-                        .foregroundStyle(Color.primary)
-                        .lineLimit(1)
+                    Spacer(minLength: 2)
                     
-                    Text(entry.nextRoutineTime)
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(Color.secondary)
+                    Button(intent: ToggleAudioIntent()) {
+                        ZStack {
+                            Circle()
+                                .fill(Color.primary.opacity(renderingMode == .accented ? 0.20 : 0.12))
+                                .frame(width: 26, height: 26)
+                            Image(systemName: "play.fill")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundStyle(Color.primary)
+                        }
+                    }
+                    .buttonStyle(.plain)
                 }
                 .padding(8)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -507,7 +637,7 @@ public struct MediumGlassWidgetView: View {
                         .fill(Color.primary.opacity(renderingMode == .accented ? 0.12 : 0.06))
                 }
             }
-            .frame(width: 116, alignment: .leading)
+            .frame(width: 120, alignment: .leading)
             
             // Right Column: Scripture Reference & Quote
             VStack(alignment: .leading, spacing: 6) {
@@ -593,48 +723,105 @@ public struct LargeGlassWidgetView: View {
                 .widgetAccentable()
             }
             
-            // If Playing: Live "Now Playing" Banner with Ticking Seconds
+            // If Playing: Live "Now Playing" Banner with Interactive Audio Controls & Ticking Seconds
             if entry.isAudioPlaying {
-                HStack(spacing: 12) {
-                    ZStack {
-                        Circle()
-                            .fill(
-                                LinearGradient(
-                                    colors: [
-                                        Color(red: 0.15, green: 0.35, blue: 0.40),
-                                        Color(red: 0.08, green: 0.18, blue: 0.22)
-                                    ],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 12) {
+                        ZStack {
+                            Circle()
+                                .fill(
+                                    LinearGradient(
+                                        colors: [
+                                            Color(red: 0.15, green: 0.35, blue: 0.40),
+                                            Color(red: 0.08, green: 0.18, blue: 0.22)
+                                        ],
+                                        startPoint: .topLeading,
+                                        endPoint: .bottomTrailing
+                                    )
                                 )
-                            )
-                            .frame(width: 44, height: 44)
+                                .frame(width: 44, height: 44)
+                            
+                            Image(systemName: "waveform")
+                                .font(.system(size: 20, weight: .semibold))
+                                .foregroundStyle(Color(red: 0.95, green: 0.82, blue: 0.45))
+                        }
                         
-                        Image(systemName: "waveform")
-                            .font(.system(size: 20, weight: .semibold))
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 4) {
+                                Circle().fill(Color.green).frame(width: 6, height: 6)
+                                Text("NOW PLAYING")
+                                    .font(.system(size: 9, weight: .bold, design: .rounded))
+                                    .foregroundStyle(Color.green)
+                            }
+                            
+                            Text(entry.playingTrackTitle)
+                                .font(.system(size: 14, weight: .bold, design: .rounded))
+                                .foregroundStyle(Color.primary)
+                                .lineLimit(1)
+                            
+                            Text(entry.playingTrackSubtitle)
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(Color.secondary)
+                                .lineLimit(1)
+                        }
+                        
+                        Spacer()
+                        
+                        // Live Ticking Seconds Timer
+                        Text(entry.playbackStartTime ?? Date(), style: .timer)
+                            .font(.system(size: 14, weight: .bold, design: .monospaced))
                             .foregroundStyle(Color(red: 0.95, green: 0.82, blue: 0.45))
                     }
                     
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack(spacing: 4) {
-                            Circle().fill(Color.green).frame(width: 6, height: 6)
-                            Text("NOW PLAYING")
-                                .font(.system(size: 9, weight: .bold, design: .rounded))
-                                .foregroundStyle(Color.green)
-                        }
+                    // Interactive Controls Row
+                    HStack(spacing: 16) {
+                        Spacer()
                         
-                        Text(entry.playingTrackTitle)
-                            .font(.system(size: 14, weight: .bold, design: .rounded))
-                            .foregroundStyle(Color.primary)
-                            .lineLimit(1)
+                        // Rewind 15s
+                        Button(intent: SkipBackwardAudioIntent()) {
+                            Image(systemName: "gobackward.15")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(Color.primary)
+                                .frame(width: 34, height: 34)
+                                .background(Color.primary.opacity(0.10), in: Circle())
+                        }
+                        .buttonStyle(.plain)
+                        
+                        // Play / Pause Toggle
+                        Button(intent: ToggleAudioIntent()) {
+                            ZStack {
+                                Circle()
+                                    .fill(
+                                        LinearGradient(
+                                            colors: [
+                                                Color(red: 0.20, green: 0.45, blue: 0.85),
+                                                Color(red: 0.10, green: 0.25, blue: 0.55)
+                                            ],
+                                            startPoint: .topLeading,
+                                            endPoint: .bottomTrailing
+                                        )
+                                    )
+                                    .frame(width: 38, height: 38)
+                                
+                                Image(systemName: entry.isAudioPlaying ? "pause.fill" : "play.fill")
+                                    .font(.system(size: 15, weight: .bold))
+                                    .foregroundStyle(Color.white)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        
+                        // Forward 15s
+                        Button(intent: SkipForwardAudioIntent()) {
+                            Image(systemName: "goforward.15")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(Color.primary)
+                                .frame(width: 34, height: 34)
+                                .background(Color.primary.opacity(0.10), in: Circle())
+                        }
+                        .buttonStyle(.plain)
+                        
+                        Spacer()
                     }
-                    
-                    Spacer()
-                    
-                    // Live Ticking Seconds Timer
-                    Text(entry.playbackStartTime ?? Date(), style: .timer)
-                        .font(.system(size: 15, weight: .bold, design: .monospaced))
-                        .foregroundStyle(Color(red: 0.95, green: 0.82, blue: 0.45))
                 }
                 .padding(12)
                 .background {
@@ -642,7 +829,7 @@ public struct LargeGlassWidgetView: View {
                         .fill(Color.primary.opacity(renderingMode == .accented ? 0.14 : 0.09))
                 }
             } else {
-                // Daily Gospel Hero Section (Idle state)
+                // Daily Gospel Hero Section (Idle state) with Interactive Play Action
                 HStack(spacing: 12) {
                     Image(systemName: "sun.haze.fill")
                         .font(.system(size: 22))
@@ -663,10 +850,13 @@ public struct LargeGlassWidgetView: View {
                     
                     Spacer()
                     
-                    Image(systemName: "play.circle.fill")
-                        .font(.system(size: 26))
-                        .foregroundStyle(Color.primary)
-                        .widgetAccentable()
+                    Button(intent: ToggleAudioIntent()) {
+                        Image(systemName: "play.circle.fill")
+                            .font(.system(size: 28))
+                            .foregroundStyle(Color.primary)
+                            .widgetAccentable()
+                    }
+                    .buttonStyle(.plain)
                 }
                 .padding(12)
                 .background {

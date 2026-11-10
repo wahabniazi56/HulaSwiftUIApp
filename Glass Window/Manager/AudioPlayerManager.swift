@@ -47,6 +47,7 @@ public final class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayer
     public override init() {
         super.init()
         setupAudioSession()
+        setupWidgetCommandObserver()
     }
     
     // MARK: - Audio Session Configuration
@@ -57,6 +58,55 @@ public final class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayer
             try session.setActive(true)
         } catch {
             print("AudioPlayerManager: Failed to configure audio session - \(error)")
+        }
+    }
+    
+    // MARK: - Widget Inter-Process Command Listener (Darwin Notification + App Group)
+    private func setupWidgetCommandObserver() {
+        // Execute any queued command right away
+        handleWidgetCommand()
+        
+        let center = CFNotificationCenterGetDarwinNotifyCenter()
+        let observer = Unmanaged.passUnretained(self).toOpaque()
+        let name = CFNotificationName(SharedWidgetData.audioCommandDarwinNotification as CFString)
+        
+        CFNotificationCenterAddObserver(
+            center,
+            observer,
+            { (_, observer, _, _, _) in
+                guard let observer = observer else { return }
+                let manager = Unmanaged<AudioPlayerManager>.fromOpaque(observer).takeUnretainedValue()
+                DispatchQueue.main.async {
+                    manager.handleWidgetCommand()
+                }
+            },
+            name.rawValue,
+            nil,
+            .deliverImmediately
+        )
+    }
+    
+    /// Handles incoming widget commands sent from Home Screen interactive widget buttons
+    public func handleWidgetCommand() {
+        guard let command = SharedWidgetData.consumePendingAudioCommand() else { return }
+        
+        switch command {
+        case "play":
+            if !isPlaying {
+                play()
+            }
+        case "pause":
+            if isPlaying {
+                pause()
+            }
+        case "toggle":
+            togglePlayPause()
+        case "skipBackward":
+            skipBackward(15)
+        case "skipForward":
+            skipForward(15)
+        default:
+            break
         }
     }
     
@@ -219,6 +269,7 @@ public final class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayer
         let newTime = min(player.currentTime + seconds, player.duration)
         player.currentTime = newTime
         updateTimeAndProgress()
+        LiveActivityManager.shared.syncPlaybackTime(currentTime: player.currentTime)
     }
     
     public func skipBackward(_ seconds: Double = 15) {
@@ -226,6 +277,7 @@ public final class AudioPlayerManager: NSObject, ObservableObject, AVAudioPlayer
         let newTime = max(player.currentTime - seconds, 0)
         player.currentTime = newTime
         updateTimeAndProgress()
+        LiveActivityManager.shared.syncPlaybackTime(currentTime: player.currentTime)
     }
     
     public func skipForward(by seconds: Double) {

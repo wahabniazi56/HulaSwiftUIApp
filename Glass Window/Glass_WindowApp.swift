@@ -51,6 +51,8 @@ struct Glass_WindowApp: App {
             case .active:
                 // App reopened before 20 mins -> cancel scheduled notification
                 NotificationManager.shared.cancelInactivityNotification()
+                // Process any queued commands from interactive widgets
+                AudioPlayerManager.shared.handleWidgetCommand()
             default:
                 break
             }
